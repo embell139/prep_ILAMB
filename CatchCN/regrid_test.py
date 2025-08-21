@@ -1,4 +1,4 @@
-import xesmf as xe
+#import xesmf as xe
 import xarray as xr
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,6 +8,7 @@ import glob
 import cartopy.feature as cf
 import cartopy.crs as ccrs
 import datetime
+from scipy.interpolate import griddata
 
 var = 'CNNPP'
 
@@ -27,10 +28,13 @@ inplot = 'CatchCN_testplot.png'
 outplot = inplot.replace('CatchCN','CatchCN_regrid')
 
 def scatterplot(df,var,title=None,savename=None,latrange=None,lonrange=None):
+    plt.close('all')
+    print('Creating scatterplot')
     fig = plt.figure()
     ax = fig.add_subplot(projection=ccrs.PlateCarree())
     ax.coastlines()
     plt.scatter(df['lon'].values, df['lat'].values, c=df[var].values, s=0.25, transform=ccrs.PlateCarree())
+    plt.colorbar(ax=ax)
     if title:
         plt.title(title)
     if latrange:
@@ -54,6 +58,35 @@ def scatterplot(df,var,title=None,savename=None,latrange=None,lonrange=None):
 #
 #    return regridder(df)
 
+def dfplot(df):
+    fig = plt.figure()
+    ax = fig.add_subplot(projection=ccrs.PlateCarree())
+    ax.coastlines()
+    df[var].plot(cmap=viridis)
+
+def regrid(df):
+    target_lats = np.arange(-90,90,degout['lat'])
+    target_lons = np.arange(-180,180,degout['lon'])
+    lon_grid,lat_grid = np.meshgrid(target_lons,target_lats)
+ 
+    print(f'Regridding {var} onto {degout['lon']}x{degout['lat']} degrees')
+    # perform interpolation with scipy griddata
+    xy_points = np.column_stack((df['lon'].values,df['lat'].values)) 
+    #breakpoint()
+    grid_values = griddata(xy_points,df[var].values.flatten(),(lon_grid,lat_grid),method='linear',fill_value=np.nan)
+    
+    df_regridded = xr.Dataset(
+        data_vars={
+            var:(['lat','lon'],grid_values)
+        },
+        coords={
+            'lon':(['lon'],target_lons),
+            'lat':(['lat'],target_lats)
+        }
+    )
+    
+    return df_regridded
+
 for year in years:
     for month in months:
         ms = datetime.datetime(year,month,1).strftime('%m')     # zero-padded month number
@@ -64,26 +97,24 @@ for year in years:
             print(f'!!==> No file found matching search string {ss}')
             sys.exit()
 
-        df = xr.open_dataset(infile)
+        df = xr.open_dataset(infile,decode_timedelta=True)
         print(f'Reading {infile}')
 
         
-#        savename = inplot.replace('_testplot.png',f'_{var}_{year}{ms}_testplot.png')
-#        scatterplot(df,var,
-#            savename=f'{plotdir}/{savename}',
-#            title=f'CatchCN original, {year}{ms}',
-#            latrange=latrange,
-#            lonrange=lonrange
-#        )
-
-        savename = outplot.replace('_testplot.png',f'_{var}_{year}{ms}_testplot.png')
-        df_regrid = regrid(df)
-        scatterplot(df_regrid,var,
+        savename = inplot.replace('_testplot.png',f'_{var}_{year}{ms}_testplot.png')
+        scatterplot(df,var,
             savename=f'{plotdir}/{savename}',
-            title=f'CatchCN regridded, {year}{ms}',
+            title=f'CatchCN original, {year}{ms}',
             latrange=latrange,
             lonrange=lonrange
         )
 
+        savename = outplot.replace('_testplot.png',f'_{var}_{year}{ms}_testplot.png')
+        df_regrid = regrid(df)
+        #breakpoint()
+
+        
+
+        breakpoint()
         sys.exit()
 
