@@ -19,8 +19,8 @@ var = 'CNNPP'
 years = [2006]
 months = [1,4,8,12]
 
-latrange = None#[-8,0.7]
-lonrange = None#[-60,-48]
+latrange = [4.1,14.6]
+lonrange = [113.1,128.4]
 
 degout = {'lat':0.1,'lon':0.1}
 
@@ -73,7 +73,8 @@ def dfplot(df,var,latrange=None,lonrange=None,savename=None,title=None,**kwargs)
 
     return
 
-def calc_distances(target_points,model_points,batch_size=10000,max_distance=0.05):
+def calc_distances(target_points,model_points,batch_size=10000,max_distance=0.1):
+    print('Calculating distances between regridded points and original points...')
     # Our dataset is too big to calculate distances between ALL points
     # using some method like scipy.spatial.distance.cdist,
     # so we need to take a more memory-efficient approach.
@@ -90,22 +91,35 @@ def calc_distances(target_points,model_points,batch_size=10000,max_distance=0.05
     tree = cKDTree(model_points) 
 
     # And we initialize a mask to identify points too far from the original 
-    distance_mask = []
+    distance_mask = np.zeros(len(target_points),dtype=bool)
 
-    for i in range(0,len(target_points),batch_size):
-        end_index = min(i+batch_size,len(target_points))
+    total_start = time.time()
+    with tqdm(total=len(target_points), desc="Processing points", unit="points") as pbar:
+        for i in range(0,len(target_points),batch_size):
+            batch_start = time.time()
+            end_index = min(i+batch_size,len(target_points))
+    
+            # To find the distance to the nearest model point (k=1) for each target gridpoint:
+            distances, indices = tree.query(target_points[i:end_index],k=1)   
+     
+            # Now we can say which points from the target grid should not be filled in by model data  
+            # because they're too far away from any of the original data.
+            # We can apply this as a mask to our gridded values!
+            distance_mask[i:end_index] = distances > max_distance
 
-        # To find the distance to the nearest model point (k=1) for each target gridpoint:
-        distances, indices = tree.query(target_points[i:end_index],k=1)   
- 
-        # Now we can say which points from the target grid should not be filled in by model data  
-        # because they're too far away from any of the original data.
-        toofar = distances > max_distance
-        # wdist is a 1D array corresponding to the each of the target [lat,lon] points.
-        # We can apply this as a mask to our gridded values!
-        distance_mask.append(toofar)
+            batch_time = time.time() - batch_start
+            pbar.update(end_index-i)
+            pbar.set_postfix({
+                'batch_time':f'{batch_time:.2f}s',
+                'rate':f'{(end_index-i)/batch_time:,.0f} pts/sec'
+                
+            })
 
-    return np.array(distance_mask) 
+    total_time = time.time()-total_start
+    print(f'⧖ Total time for batch processing k-d tree: {total_time:.2f} seconds')
+
+    #breakpoint()
+    return distance_mask
 
 def regrid(df):
     target_lats = np.arange(-90,90,degout['lat'])
@@ -118,6 +132,7 @@ def regrid(df):
     model_points = np.column_stack((df['lon'].values,df['lat'].values)) # list of [lon,lat] pairs from model data
     target_points = np.column_stack((lon_grid.ravel(),lat_grid.ravel()))    # list of [lon,lat] pairs from target grid 
     #breakpoint()
+    grid_start = time.time()
     grid_values = griddata(
         model_points,               # 1D list of [lon,lat] pairs from model
         df[var].values.flatten(),   # 1D list of data values
@@ -125,6 +140,8 @@ def regrid(df):
         method='linear',
         fill_value=np.nan
     )
+    grid_time = time.time() - grid_start
+    print(f'⧖ Regridding {var} took {grid_time:.2f} seconds')
 
     # The result: grid_values is a 1D list of data values corresponding to each [lon,lat] pair from the target grid.t
 
@@ -132,11 +149,10 @@ def regrid(df):
     # First, calculate the distance between target grid lon/lat points and original model lon/lat points - 
     ocean_mask = calc_distances(target_points,model_points)
 
-    breakpoint()
     grid_values[ocean_mask] = np.nan
 
     # Put it back into 2D
-    final_values = grid_values.reshape(target_lons.shape)
+    final_values = grid_values.reshape(lon_grid.shape)
     
     # Create your output DataFrame 
     df_regridded = xr.Dataset(
@@ -170,14 +186,15 @@ for year in years:
             title=f'CatchCN original, {year}{ms}',
             latrange=latrange,
             lonrange=lonrange,
-            #savename=f'{plotdir}/{savename}',
+            savename=f'{plotdir}/{savename}',
         )
+        #breakpoint()
 
         # pcolormesh of regridded data
         savename = outplot.replace('_testplot.png',f'_{degout['lon']}x{degout['lat']}deg_{var}_{year}{ms}_testplot.png')
         df_regrid = regrid(df)
         dfplot(df_regrid,var,
-            title=f'CatchCN original, {year}{ms}, {degout['lon']}x{degout['lat']}deg',
+            title=f'CatchCN regridded, {year}{ms}, {degout['lon']}x{degout['lat']}deg',
             savename=f'{plotdir}/{savename}',
             latrange=latrange,
             lonrange=lonrange,
