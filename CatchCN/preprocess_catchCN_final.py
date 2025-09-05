@@ -2,6 +2,7 @@ import xarray as xr
 import numpy as np
 import glob
 import os
+import argparse
 import cftime as cf
 from datetime import datetime
 import sys
@@ -14,9 +15,7 @@ import time
 verbose = 1
 
 degout = {'lat':0.1,'lon':0.1}
-indir = '/css/gmao/geos_carb/archive/jkolassa/GEOSldas_CN40_9km/output/SMAP_EASEv2_M09_GLOBAL/cat/ens0000/'
 ftype = 'GEOSldas_CN40_9km.tavg24_1d_lnd_Nt.monthly'
-outdir = '/discover/nobackup/projects/gmao/geos_carb/embell/ilamb/data/ILAMB_sample/MODELS/CatchCN40-test/'
 force_overwrite = 1
 
 # map native variable names to CF variable names
@@ -58,8 +57,8 @@ def main():
         sys.exit()
 
     start_month,stop_month = args.months
-    for year in years:
-        for month in months:
+    for year in range(start_year,stop_year+1,1):
+        for month in range(start_month,stop_month+1,1):
             ms = datetime(year,month,1).strftime('%m')  # zero-padded month number
 
             # Construct input filename
@@ -78,11 +77,12 @@ def main():
 
             # Construct output filename
             try:
-                fout = args.outdir+os.path.basename(f).replace('.nc4',f'{args.suffix}.nc')
+                fout = args.outdir+os.path.basename(infile).replace('.nc4',f'{args.suffix}.nc')
                 if args.verbose:
                     print(f'• Outfile: {fout}')
             except:
-                print('\n!!==> Missing the required --outdir or --filetype argument.')
+                print('\n!!==> Missing the required --outdir or --suffix argument.')
+                breakpoint()
                 sys.exit()
 
             # Check for existing output file and overwrite if specified
@@ -94,7 +94,8 @@ def main():
 
             # Open original Catchment-CN file            
             df = xr.open_dataset(infile, decode_timedelta=True)
-            print(f'Reading {infile}')
+            print('=====\n=====')
+            print(f'\n Reading {infile}')
 
             # Reformat variables for ILAMB
             df = variable_preprocessing(df)
@@ -105,6 +106,8 @@ def main():
             # Add the time variable and calendar encoding
             df_regrid = time_encoding(df_regrid,year,month)
            
+            breakpoint()
+
             # Write to netCDF
             print('Writing '+fout)
             df.to_netcdf(fout,format='NETCDF4')
@@ -137,12 +140,12 @@ def parse_args():
     )
     parser.add_argument('--suffix',type=str,
         default='-ILAMB',
-        help='Suffix to add to filename when writing out changes.')
-
+        help='Suffix to add to filename when writing out changes.'
+    )
     parser.add_argument('-v','--verbose',
         action='store_true',
-        help='Verbose output')
-
+        help='Verbose output'
+    )
     parser.add_argument('-f','--force_overwrite',
         action='store_true',
         help='Force overwrite of any existing output files'
@@ -152,6 +155,9 @@ def parse_args():
     args = parser.parse_args()
     return parser.parse_args()
 
+########################
+#  OTHER FUNCTIONS 
+########################
 
 def variable_preprocessing(df):
     """ 
@@ -195,7 +201,6 @@ def regrid(df):
     target_lons = np.arange(-180,180,degout['lon'])
     lon_grid,lat_grid = np.meshgrid(target_lons,target_lats)    # 2D lat/lon matrix
 
-    print(f'Regridding data onto {degout['lon']}x{degout['lat']} degrees')
 
     # Create your output DataFrame
     df_regridded = xr.Dataset(
@@ -211,11 +216,17 @@ def regrid(df):
 
     # Now we need to set the ocean points to zero because there is no data over ocean in the original dataset!
     # First, calculate the distance between target grid lon/lat points and original model lon/lat points -
+    print(f'\n• Creating ocean mask for new lat/lon grid')
     ocean_mask = calc_distances(target_points,model_points)
 
-    #breakpoint()
+    print(f'\n• Regridding data onto {degout['lon']}x{degout['lat']} degrees...')
     grid_start = time.time()
-    for var in df.variables:
+    #breakpoint()
+    for i, var in enumerate(df.variables):
+        if ('lat' in var) or ('lon' in var): 
+            continue
+        print(f'├ Variable: {var} ({i}/{len(df.variables)})')
+        var_start = time.time()
         grid_values = griddata(
             model_points,               # 1D list of [lon,lat] pairs from model
             df[var].values.flatten(),   # 1D list of data values
@@ -224,18 +235,21 @@ def regrid(df):
             fill_value=np.nan
         )
         # The result: grid_values is a 1D list of data values corresponding to each [lon,lat] pair from the target grid.t
-
+    
         # Apply ocean mask
         grid_values[ocean_mask] = np.nan
-
+    
         # Put it back into 2D
         final_values = grid_values.reshape(lon_grid.shape)
         
         # Add it to the new xarray dataset
-        df_regridded[var] = (['lon','lat'],final_values) 
+        df_regridded[var] = (['lat','lon'],final_values) 
+        
+        var_time = time.time() - var_start
+        print(f'│ ⧖ {var} regrid time: {var_time:.2f}s')
 
     grid_time = time.time() - grid_start
-    print(f'⧖ Regridding variables took {grid_time:.2f} seconds')
+    print(f'⧖ Regridding all variables in file took {grid_time:.2f} seconds')
 
     return df_regridded
 
@@ -292,7 +306,7 @@ def calc_distances(target_points,model_points,batch_size=10000,max_distance=0.1)
             })
 
     total_time = time.time()-total_start
-    print(f'⧖ Total time for batch processing k-d tree: {total_time:.2f} seconds')
+    print(f'⧖ Total time for batch processing k-d tree distances: {total_time:.2f} seconds')
 
     #breakpoint()
     return distance_mask
