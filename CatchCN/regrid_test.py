@@ -167,6 +167,9 @@ def regrid(df):
     
     return df_regridded
 
+####################
+# MAIN CODE
+####################
 for year in years:
     for month in months:
         ms = datetime.datetime(year,month,1).strftime('%m')     # zero-padded month number
